@@ -1,0 +1,8 @@
+# Run-time logs from the miner — transient, not part of the deliverable.
+# retry_low_quality.log is deliberately NOT excluded — it's the audit trail
+# for which rows were updated by Step 2 and we want it in the repo.
+mine_ipni_bhl.log
+mine_run.out
+
+__pycache__/
+*.pyc
