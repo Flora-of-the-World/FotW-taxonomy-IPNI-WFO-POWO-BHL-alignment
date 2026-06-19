@@ -54,7 +54,18 @@ fotw_taxonomy_resolved.csv
      - Replace the row in place if a higher-quality match is found
             │
             ▼
-   fotw_ipni_bhl.csv  (final — 98.11% confident matches)
+   fotw_ipni_bhl.csv  (Step 2 done — 98.11% confident matches)
+            │
+            ▼
+[Step 3] fix_bhl_page_urls.py   (BHL protologue page-URL backfill)
+   For each row with year + collation + bhl_title_id:
+     - Reconstruct IPNI's BHL OpenURL from those three fields
+     - Follow the redirect through BHL's resolver
+     - Capture the resolved /page/{id} as bhl_page_url
+            │
+            ▼
+   fotw_ipni_bhl.csv  (final — bhl_page_url now lands on the protologue
+                       page itself, not the publication landing page)
 ```
 
 ### Step 1 — `mine_ipni_bhl.py`
@@ -83,6 +94,14 @@ After the first pass, two cheap retry strategies recover ~30% of the remaining l
 | **Gender swap** | Try alternate Latin gender endings (`-a` / `-us` / `-um`) for binomial names. | `Aleurites moluccana` → `Aleurites moluccanus` (L.) Willd. |
 
 Only replaces a row when the new match is genuinely higher quality. Recovered rows carry a tagged `match_quality` (e.g., `exact_top_copy_autonym`, `exact_with_author_gender`) so the source of the fix stays auditable.
+
+### Step 3 — `fix_bhl_page_urls.py`
+
+Backfills `bhl_page_id` / `bhl_page_url` with the correct protologue page URL. Earlier versions of the miner extracted `/page/{id}` from `linkedPublication.bhlPageLink`, which is the **publication-level** landing page in BHL — not the page where the species was described. The protologue link is encoded in the top-level `bhlLink` OpenURL as `rft.volume` + `rft.spage` + `rft.date` against the `bibliography/{id}` reference.
+
+Step 3 reconstructs that OpenURL from data already in the CSV (`protologue_year`, `protologue_collation`, `bhl_title_id`), follows BHL's redirect, and captures the resolved `/page/{id}`. If BHL can't resolve to a clean page URL (vol+page combo not scanned, malformed collation, etc.), the row's `bhl_page_url` is left blank so Kenny's existing fallback to `bhl_title_url` kicks in cleanly.
+
+This step is also baked into the patched `mine_ipni_bhl.py`, so any future re-mine resolves correctly from the start. Step 3 only needs to be run again if the existing CSV was built with the old (buggy) parse_bhl.
 
 #### Recovery summary (on the actual 12,830-taxon run)
 
@@ -160,12 +179,12 @@ python3 retry_low_quality.py
 | Metric | Count | % |
 |---|---:|---:|
 | Confident matches (all `exact_*`) | **12,587** | **98.11%** |
-| GBIF accepted ID + URL | 12,827 | 99.97% |
-| IPNI ID + URL | 12,587 | 98.1% |
+| GBIF accepted ID + URL | 12,827 | 100.0% |
+| IPNI ID + URL | 12,638 | 98.5% |
 | WFO ID + URL | 12,129 | 94.5% |
 | POWO URL (`in_powo = y`) | 11,788 | 91.9% |
 | BHL title URL | 9,986 | 77.8% |
-| BHL protologue page URL | 6,913 | 53.9% |
+| BHL protologue page URL *(verified after Step 3)* | **726** | **5.7%** |
 | Distribution text | 2,111 | 16.5% |
 | Type note | 96 | 0.7% |
 | Errors | 0 | 0.0% |
@@ -203,7 +222,7 @@ protologue_reference   : Sp. Pl. 2: 951. 1753 [1 May 1753]
 protologue_year        : 1753
 protologue_publication : Species Plantarum
 protologue_collation   : 2: 951
-bhl_page_url           : https://www.biodiversitylibrary.org/page/33355180
+bhl_page_url           : https://www.biodiversitylibrary.org/page/358972
 bhl_title_url          : https://www.biodiversitylibrary.org/bibliography/669
 type_note              : Dodoens, Stirp. Hist. Permpt. ed. 2, 180, fig. 1, 2. 1616
 distribution           : Europe, Asia & North America
@@ -223,8 +242,8 @@ Three tiers of cross-database identifiers + one bibliographic link, render which
 | `ipni_url` | "IPNI: {ipni_id}" badge → `ipni_url` | Nomenclatural provenance. Available for 98% of taxa. |
 | `wfo_url` | "WFO" badge → `wfo_url` | Cross-link to World Flora Online. Available for 94%. |
 | `powo_url` | "POWO" badge → `powo_url` | Cross-link to Plants of the World Online (Kew). Available for 92%. |
-| `bhl_page_url` | "View original description on BHL" → `bhl_page_url` | Direct link to the scanned page of the protologue. The single most useful link for users (54% coverage). |
-| `bhl_title_url` | "View publication on BHL" → `bhl_title_url` | Fallback when `bhl_page_url` is empty; links to the whole publication (78% coverage). |
+| `bhl_page_url` | "View original description on BHL" → `bhl_page_url` | Direct link to the scanned page of the protologue, verified via BHL's OpenURL resolver. Coverage is **5.7%** — BHL has scanned page-level access for relatively few protologues. When present, the link is precise. |
+| `bhl_title_url` | "View publication on BHL" → `bhl_title_url` | Fallback when `bhl_page_url` is empty; links to the whole publication. Coverage **77.8%** — this is the workhorse link for most taxa. |
 | `protologue_reference` | inline citation under the species name | E.g., *"Originally described by Linnaeus in Sp. Pl. 2: 951. 1753."* |
 
 For taxa where IPNI has no record (~2%), show none of the above — let FotW fall back to its existing metadata.
@@ -233,11 +252,12 @@ For taxa where IPNI has no record (~2%), show none of the above — let FotW fal
 
 | File | Purpose |
 |---|---|
-| `mine_ipni_bhl.py` | Step 1 — main miner. Resumable. |
+| `mine_ipni_bhl.py` | Step 1 — main miner. Resumable. Patched to resolve BHL OpenURLs through their redirect (so any future re-mine produces correct `bhl_page_url` from the start). |
 | `retry_low_quality.py` | Step 2 — autonym + gender-swap retry. |
+| `fix_bhl_page_urls.py` | Step 3 — backfill correct BHL protologue page URLs into an existing CSV. Only needed if the CSV was produced before the parse_bhl fix. |
 | `fotw_ipni_bhl.csv` | **Deliverable.** 12,830 rows × 25 columns. |
-| `mine_ipni_bhl.log` | Per-row error log from Step 1. |
 | `retry_low_quality.log` | TSV log of every row updated by Step 2 (old quality → new quality → IPNI match). |
+| `fix_bhl_page_urls.log` | TSV log of every row updated by Step 3 (old bhl_page_id → new bhl_page_id → status). |
 | `README.md` | This file. |
 
 ## Citation

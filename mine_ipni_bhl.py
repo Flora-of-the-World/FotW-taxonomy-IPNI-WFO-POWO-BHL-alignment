@@ -176,27 +176,65 @@ TITLE_RE = re.compile(r"biodiversitylibrary\.org/bibliography/(\d+)")
 def parse_bhl(record):
     """
     Pull (bhl_page_id, bhl_page_url, bhl_title_id, bhl_title_url) from an
-    IPNI name record. Falls back to nested linkedPublication fields.
+    IPNI name record.
+
+    Important: the top-level `bhlLink` field is an OpenURL with rft.volume +
+    rft.spage that resolves to the protologue page. The nested
+    `linkedPublication.bhlPageLink` is a PUBLICATION-level link (BHL's
+    landing page for the journal/book) and must NOT be treated as the
+    protologue page. We resolve the top-level OpenURL via a redirect to get
+    the actual `/page/{id}` URL where the species was first described.
+
+    The title link comes from `linkedPublication.bhlTitleLink` (or the
+    rft_id fragment of any /bibliography/{id} URL we encounter).
     """
     page_id = page_url = title_id = title_url = ""
 
-    candidates = [record.get("bhlLink", "")]
+    # Title link: any /bibliography/{id} URL we see in any of the OpenURL fields.
     lp = record.get("linkedPublication") or {}
-    candidates += [lp.get("bhlPageLink", ""), lp.get("bhlTitleLink", "")]
-
-    for c in candidates:
+    for c in (record.get("bhlLink", ""),
+              lp.get("bhlTitleLink", ""),
+              lp.get("bhlPageLink", "")):
         if not c:
             continue
-        m = PAGE_RE.search(c)
-        if m and not page_id:
-            page_id = m.group(1)
-            page_url = f"https://www.biodiversitylibrary.org/page/{page_id}"
         m = TITLE_RE.search(c)
         if m and not title_id:
             title_id = m.group(1)
             title_url = f"https://www.biodiversitylibrary.org/bibliography/{title_id}"
+            break
+
+    # Protologue page link: ONLY the top-level bhlLink is reliable here, and
+    # only after we resolve the OpenURL through BHL's redirect. We do that
+    # lookup lazily in `_resolve_bhl_page` so callers can disable it for
+    # offline / dry-run modes.
+    page_id, page_url = _resolve_bhl_page(record.get("bhlLink", ""))
 
     return page_id, page_url, title_id, title_url
+
+
+def _resolve_bhl_page(openurl):
+    """
+    Follow BHL's OpenURL redirect to capture the resolved /page/{id} URL.
+    Returns ("", "") if the OpenURL is empty or the redirect doesn't land
+    on a page-level URL.
+    """
+    if not openurl:
+        return "", ""
+    # Normalise to https.
+    openurl = openurl.replace("http://", "https://", 1)
+    try:
+        req = Request(openurl, headers=HEADERS, method="GET")
+        with urlopen(req, timeout=20) as resp:
+            final = resp.geturl()
+    except HTTPError as e:
+        final = getattr(e, "url", "") or ""
+    except (URLError, Exception):
+        return "", ""
+    m = PAGE_RE.search(final)
+    if not m:
+        return "", ""
+    page_id = m.group(1)
+    return page_id, f"https://www.biodiversitylibrary.org/page/{page_id}"
 
 
 # ── Worker ────────────────────────────────────────────────────────────────────

@@ -3,6 +3,7 @@
 # for which rows were updated by Step 2 and we want it in the repo.
 mine_ipni_bhl.log
 mine_run.out
+fix_bhl_run.out
 
 __pycache__/
 *.pyc
